@@ -46,6 +46,11 @@ export default {
         return json({ q, results }, cors);
       }
       if (url.pathname === "/api/image") return image(url.searchParams.get("url"), cors);
+      if (url.pathname === "/api/peek2") {
+        if (!q) return new Response("Add ?q=product to the address", { headers: { "content-type": "text/plain" } });
+        const parts = await Promise.all([peekContext(STORES.find(s => s.id === "chemist"), q), peekScripts(STORES.find(s => s.id === "priceline"), q)]);
+        return new Response(parts.join("\n\n"), { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+      }
       if (url.pathname === "/api/peek") {
         if (!q) return new Response("Add ?q=product to the address", { headers: { "content-type": "text/plain" } });
         const ids = (url.searchParams.get("stores") || "priceline,chemist,adore").split(",");
@@ -157,6 +162,51 @@ async function peek(store, q) {
     const globals = [...new Set([...h.matchAll(/window\.([A-Za-z_$][\w$]{3,40})\s*=/g)].map(m => m[1]))].slice(0, 15);
     lines.push("Page data names: " + globals.join(", "));
     lines.push("Mentions: " + ["__NEXT_DATA__", "algolia", "constructorio", "bloomreach", "klevu", "searchspring", "graphql", "magento", "shopify", "salesforce", "hybris", "commercetools", "nuxt", "apollo"].filter(w => h.toLowerCase().includes(w.toLowerCase())).join(", "));
+  } catch (e) { lines.push("error " + (e && e.message || e)); }
+  return lines.join("\n");
+}
+
+async function peekContext(store, q) {
+  const lines = ["== " + store.name + " (data) =="];
+  try {
+    const r = await get(store.base + store.pages[0].replace("{q}", encodeURIComponent(q)));
+    const h = r.text, word = q.split(/\s+/).slice(-2).join(" ").toLowerCase(), low = h.toLowerCase();
+    let from = 0, n = 0;
+    while (n < 3) {
+      const i = low.indexOf(word, from); if (i < 0) break;
+      lines.push("--- near '" + word + "' at " + i + ":");
+      lines.push(h.slice(Math.max(0, i - 450), i + 350).replace(/\s+/g, " "));
+      from = i + 2000; n++;
+    }
+    const nd = h.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+    if (nd) {
+      try {
+        const d = JSON.parse(nd[1]), pp = (d.props || {}).pageProps || {};
+        lines.push("Page data sections: " + Object.keys(pp).join(", "));
+        for (const k of Object.keys(pp)) { const v = pp[k]; if (v && typeof v === "object") lines.push("  " + k + ": " + Object.keys(v).slice(0, 15).join(", ")); }
+        lines.push("Page data size: " + nd[1].length);
+      } catch (e) { lines.push("Page data unreadable"); }
+    } else lines.push("No page data block");
+  } catch (e) { lines.push("error " + (e && e.message || e)); }
+  return lines.join("\n");
+}
+async function peekScripts(store, q) {
+  const lines = ["== " + store.name + " (scripts) =="];
+  try {
+    const r = await get(store.base + store.pages[0].replace("{q}", encodeURIComponent(q)));
+    const srcs = [...r.text.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map(m => m[1]).filter(s2 => /main|scripts|chunk/i.test(s2));
+    for (const src of srcs.slice(0, 3)) {
+      const u = absolute(store.base + "/", src);
+      const js = await get(u, "*/*");
+      lines.push("--- " + src + " (" + js.status + ", " + js.text.length + " characters)");
+      const seen = new Set(); let n = 0;
+      for (const m of js.text.matchAll(/api\.priceline\.com\.au|product-search|shopper-search|productSearch|searchProducts|\/search\?|clientId|client_id|siteId|organizations\/|x-api-key|apiKey|\/v\d\/[a-z-]*search/gi)) {
+        const snip = js.text.slice(Math.max(0, m.index - 110), m.index + 130).replace(/\s+/g, " ");
+        const key = snip.slice(90, 150); if (seen.has(key)) continue; seen.add(key);
+        lines.push("  ..." + snip + "...");
+        if (++n >= 14) break;
+      }
+    }
   } catch (e) { lines.push("error " + (e && e.message || e)); }
   return lines.join("\n");
 }
