@@ -13,9 +13,9 @@ const STORES = [
   { id: "coles", name: "Coles", base: "https://www.coles.com.au", pages: ["/search/products?q={q}"] },
   { id: "mecca", name: "Mecca", base: "https://www.mecca.com", pages: ["/en-au/search/?q={q}"] },
   { id: "sephora", name: "Sephora", base: "https://www.sephora.com.au", pages: ["/search?q={q}"] },
-  { id: "amazon", name: "Amazon AU", base: "https://www.amazon.com.au", pages: ["/s?k={q}"] },
+  { id: "amazon", name: "Amazon AU", base: "https://www.amazon.com.au", amazon: true, pages: ["/s?k={q}"] },
 ];
-const SEARCH_STORES = ["adore", "priceline", "lila", "sephora", "chemist", "mecca"];
+const SEARCH_STORES = ["lila", "woolworths", "adore", "priceline", "chemist", "amazon"];
 
 export default {
   async fetch(request) {
@@ -45,6 +45,12 @@ export default {
         return json({ q, results }, cors);
       }
       if (url.pathname === "/api/image") return image(url.searchParams.get("url"), cors);
+      if (url.pathname === "/api/peek") {
+        if (!q) return new Response("Add ?q=product to the address", { headers: { "content-type": "text/plain" } });
+        const ids = (url.searchParams.get("stores") || "priceline,chemist,adore").split(",");
+        const parts = await Promise.all(STORES.filter(s => ids.includes(s.id)).map(s => peek(s, q)));
+        return new Response(parts.join("\n\n"), { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+      }
       return json({ error: "Not found" }, cors, 404);
     } catch (e) {
       return json({ error: String(e && e.message || e) }, cors, 500);
@@ -95,7 +101,7 @@ async function checkStore(store, q, verbose) {
     for (const p of store.pages) {
       const r = await get(store.base + p.replace("{q}", enc));
       const blocked = r.status === 403 || r.status === 429 || r.status === 503 || /captcha|access denied|are you a robot|incapsula|cf-chl|px-captcha/i.test(r.text.slice(0, 5000));
-      const items = r.status === 200 ? pageItems(store, r.text) : [];
+      const items = r.status === 200 ? (store.amazon ? amazonItems(store, r.text) : pageItems(store, r.text)) : [];
       tried.push({ how: "page " + p, status: r.status, bytes: r.text.length, blocked, found: items.length });
       if (items.length) return done(store, "ok", items, tried, verbose);
       if (blocked) return done(store, "blocked", [], tried, verbose);
@@ -110,6 +116,48 @@ function done(store, status, items, tried, verbose) {
   const out = { store: store.name, id: store.id, status, items };
   if (verbose) out.tried = tried;
   return out;
+}
+
+function decode(t) { return String(t || "").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ").trim(); }
+function amazonItems(store, html) {
+  const out = [];
+  const chunks = html.split('data-component-type="s-search-result"').slice(1, 16);
+  for (const c of chunks) {
+    if (/AdHolder|s-sponsored-label/.test(c.slice(0, 3000))) continue;
+    const title = (c.match(/<h2[^>]*>[\s\S]*?<span[^>]*>([^<]{4,})<\/span>/) || [])[1];
+    const price = (c.match(/<span class="a-offscreen">\$?([\d,]+\.?\d*)<\/span>/) || [])[1];
+    const was = (c.match(/a-text-price[^>]*>\s*<span class="a-offscreen">\$?([\d,]+\.?\d*)/) || [])[1];
+    const img = (c.match(/<img[^>]*class="s-image"[^>]*src="([^"]+)"/) || c.match(/<img[^>]*src="([^"]+)"[^>]*class="s-image"/) || [])[1];
+    const link = (c.match(/href="(\/[^"]*\/dp\/[A-Z0-9]{10}[^"]*)"/) || [])[1];
+    const it = clean(store, { name: decode(title), brand: "", price: num(price), wasPrice: num(was), url: link ? decode(link).split("?")[0] : null, image: img });
+    if (it) out.push(it);
+  }
+  return out;
+}
+
+async function peek(store, q) {
+  const lines = ["== " + store.name + " =="];
+  try {
+    const r = await get(store.base + store.pages[0].replace("{q}", encodeURIComponent(q)));
+    const h = r.text;
+    lines.push("status " + r.status + ", " + h.length + " characters, ended at " + r.finalUrl);
+    const urls = new Set();
+    for (const m of h.matchAll(/https?:\/\/[^"'\s<>()\\]+/g)) {
+      const u = m[0];
+      if (/api|search|graphql|algolia|constructor|bloomreach|klevu|searchspring|coveo|unbxd|findify|attraqt|fredhopper|swiftype|elastic|typesense|product/i.test(u) && !/\.(png|jpe?g|svg|webp|gif|css|woff2?)(\?|$)/i.test(u)) urls.add(u.slice(0, 160));
+      if (urls.size > 25) break;
+    }
+    lines.push("Interesting addresses:"); urls.forEach(u => lines.push("  " + u));
+    const keys = new Set();
+    for (const m of h.matchAll(/["']?(app(?:lication)?_?id|api_?key|search_?key|index_?name|client_?key|key|apiKey|appId|indexName|searchApiKey)["']?\s*[:=]\s*["']([A-Za-z0-9_\-.]{6,64})["']/gi)) { keys.add(m[1] + "=" + m[2]); if (keys.size > 20) break; }
+    lines.push("Settings found:"); keys.forEach(k => lines.push("  " + k));
+    const srcs = [...h.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map(m => m[1]).slice(0, 15);
+    lines.push("Scripts:"); srcs.forEach(s2 => lines.push("  " + s2.slice(0, 140)));
+    const globals = [...new Set([...h.matchAll(/window\.([A-Za-z_$][\w$]{3,40})\s*=/g)].map(m => m[1]))].slice(0, 15);
+    lines.push("Page data names: " + globals.join(", "));
+    lines.push("Mentions: " + ["__NEXT_DATA__", "algolia", "constructorio", "bloomreach", "klevu", "searchspring", "graphql", "magento", "shopify", "salesforce", "hybris", "commercetools", "nuxt", "apollo"].filter(w => h.toLowerCase().includes(w.toLowerCase())).join(", "));
+  } catch (e) { lines.push("error " + (e && e.message || e)); }
+  return lines.join("\n");
 }
 
 function shopifyItems(store, text) {

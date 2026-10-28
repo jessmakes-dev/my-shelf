@@ -178,6 +178,20 @@ h2{font-family:var(--font-display);font-weight:500;font-size:18px;margin:0}
 .mini-btn{border:none;background:var(--petal);color:var(--rose-ink);font-weight:700;font-size:13px;padding:7px 12px;border-radius:999px;flex:none;text-decoration:none;white-space:nowrap}
 .tap-row{width:100%;background:none;border:none;padding:0;text-align:left}
 .more{font-size:14px;font-weight:700;color:var(--rose-deep);text-decoration:none;align-self:flex-start}
+.deal-head{display:flex;align-items:center;gap:12px;min-width:0}
+.deal-rows{display:flex;flex-direction:column;gap:6px}
+.deal-row{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--blush);border-radius:14px;text-decoration:none;color:var(--ink);min-width:0}
+.deal-row.best{background:var(--petal);border:1px solid var(--rose)}
+.deal-store{display:flex;flex-direction:column;min-width:0;flex:1}
+.deal-store b{font-size:14px}
+.deal-store small{font-size:12px;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tag{position:relative;font-family:var(--font-display);font-weight:600;font-size:16px;color:var(--rose-ink);background:var(--card);border:1px solid var(--line);padding:3px 10px 3px 16px;border-radius:6px 999px 999px 6px;font-variant-numeric:tabular-nums;flex:none}
+.tag::before{content:"";position:absolute;left:6px;top:50%;width:5px;height:5px;border-radius:50%;background:var(--line);transform:translateY(-50%)}
+.was{font-size:12px;color:var(--ink-soft);text-decoration:line-through;flex:none}
+.save{font-size:11px;font-weight:700;color:var(--on-rose);background:var(--rose-deep);padding:2px 8px;border-radius:999px;flex:none}
+.best-label{font-size:11px;font-weight:700;color:var(--rose-ink)}
+.deal-badges{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:2px 0}
+.notfound{font-size:12px;color:var(--ink-soft);margin:0}
 .stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 .stat{background:var(--blush);border-radius:16px;padding:10px 12px;display:flex;flex-direction:column;min-width:0}
 .stat b{font-family:var(--font-display);font-size:24px;font-weight:600;line-height:1.1;color:var(--rose-ink);font-variant-numeric:tabular-nums}
@@ -364,16 +378,21 @@ h2{font-family:var(--font-display);font-weight:500;font-size:18px;margin:0}
           <button class="refresh" id="refreshBtn" type="button" aria-label="Refresh prices"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>
         </div>
       </div>
-      <div class="card">
-        <div class="card-head"><h2>Running low</h2><span class="badge">First up</span></div>
-        <p class="muted">Products at 0 backups will show here first, cheapest store at the top.</p>
-      </div>
-      <div class="card">
+      <p class="muted" id="shopProgress" hidden></p>
+      <div class="card" id="shopEmpty">
         <div class="peek">
           <div class="peek-box" data-pip="peek"></div>
-          <h2>No prices to show yet</h2>
-          <p class="muted">Once your products are in, you'll see Priceline, Chemist Warehouse, Adore Beauty, Lila Beauty and more side by side, with the saving on each.</p>
+          <h2 id="shopEmptyTitle">No prices to show yet</h2>
+          <p class="muted" id="shopEmptyText">Tap refresh to check Priceline, Chemist Warehouse, Adore Beauty, Lila Beauty, Woolworths and more, side by side.</p>
         </div>
+      </div>
+      <div id="shopLowWrap" hidden style="display:flex;flex-direction:column;gap:12px">
+        <div class="card-head"><h2>Running low</h2><span class="badge">First up</span></div>
+        <div id="shopLow" style="display:flex;flex-direction:column;gap:12px"></div>
+      </div>
+      <div id="shopRestWrap" hidden style="display:flex;flex-direction:column;gap:12px">
+        <div class="card-head"><h2 id="shopRestTitle">Everything else</h2></div>
+        <div id="shopRest" style="display:flex;flex-direction:column;gap:12px"></div>
       </div>
     </section>
   </main>
@@ -653,10 +672,12 @@ h2{font-family:var(--font-display);font-weight:500;font-size:18px;margin:0}
   });
 
   var refreshBtn = document.getElementById("refreshBtn");
+  var checking = false;
   refreshBtn.addEventListener("click", function(){
     buzz();
     refreshBtn.classList.remove("spin"); void refreshBtn.offsetWidth; refreshBtn.classList.add("spin");
-    toast("Price checking arrives in Step 6");
+    if (!HELPER_URL) { toast("Price checking works in the phone app."); return; }
+    refreshPrices();
   });
 
   var root = document.documentElement, themeBtn = document.getElementById("themeBtn");
@@ -700,7 +721,7 @@ h2{font-family:var(--font-display);font-weight:500;font-size:18px;margin:0}
 
   function newId(){ return (window.crypto && crypto.randomUUID) ? crypto.randomUUID().replace(/-/g,"").slice(0,20) : (Date.now().toString(36) + Math.random().toString(36).slice(2,10)); }
   var IS_CLAUDE = !!(window.claude && window.claude.use);
-  var HELPER_URL = "";
+  var HELPER_URL = IS_CLAUDE ? "" : "https://my-shelf-helper.jessica-huddy.workers.dev";
   var photoURLs = {};
   function photoSrc(p){
     if (p.photo) return IS_CLAUDE ? "/_blob/" + p.photo : (photoURLs[p.photo] || null);
@@ -888,9 +909,11 @@ h2{font-family:var(--font-display);font-weight:500;font-size:18px;margin:0}
     if (!sb.dataset.saving) sb.disabled = !!ss.cutting;
   }
   typeInput.addEventListener("change", function(){ if (sheetState) renderPhoto(); });
-  photoInput.addEventListener("change", async function(){
-    var f = photoInput.files && photoInput.files[0]; if (!f) return;
-    var ss = sheetState;
+  photoInput.addEventListener("change", function(){
+    var f = photoInput.files && photoInput.files[0]; if (f) usePhotoFile(f);
+  });
+  async function usePhotoFile(f){
+    var ss = sheetState; if (!ss) return;
     ss.originalFile = f; ss.photoFile = f; ss.photoRemoved = false; ss.useCut = false;
     ss.originalPreview = URL.createObjectURL(f); ss.photoPreview = ss.originalPreview;
     ss.cutBlob = null; ss.cutPreview = null; ss.cutFailed = false; ss.cutting = true;
@@ -903,7 +926,7 @@ h2{font-family:var(--font-display);font-weight:500;font-size:18px;margin:0}
     } catch(err){ if (sheetState === ss) ss.cutFailed = true; }
     if (sheetState !== ss) return;
     ss.cutting = false; renderPhoto();
-  });
+  }
   document.getElementById("cutToggle").addEventListener("click", function(){
     var ss = sheetState; ss.useCut = !ss.useCut;
     ss.photoFile = ss.useCut ? ss.cutBlob : ss.originalFile;
@@ -988,9 +1011,10 @@ h2{font-family:var(--font-display);font-weight:500;font-size:18px;margin:0}
   function setSearchStatus(msg){ var s = document.getElementById("searchStatus"); s.textContent = msg || ""; s.hidden = !msg; }
   function renderSearchResults(){
     document.getElementById("searchResults").innerHTML = searchResults.map(function(r, i){
-      return '<button class="mini" type="button" data-result="' + i + '"><span class="thumb">' + typeIcon(r.type) + '</span>' +
+      var th = r.image && HELPER_URL ? '<img alt="" src="' + esc(HELPER_URL + "/api/image?url=" + encodeURIComponent(r.image)) + '">' : typeIcon(r.type);
+      return '<button class="mini" type="button" data-result="' + i + '"><span class="thumb">' + th + '</span>' +
         '<span class="item-text"><span class="item-name">' + esc(r.name) + '</span><span class="item-brand">' + esc(r.brand) + (r.type ? ' · ' + esc(r.type) : '') + '</span></span>' +
-        (r.origin === "Korean" ? '<span class="origin">K-beauty</span>' : r.origin === "Japanese" ? '<span class="origin">J-beauty</span>' : '') + '</button>';
+        (r.origin === "Korean" ? '<span class="origin">K-beauty</span>' : r.origin === "Japanese" ? '<span class="origin">J-beauty</span>' : r.store ? '<span class="origin">' + esc(r.store) + '</span>' : '') + '</button>';
     }).join("");
   }
   document.getElementById("searchBlock").addEventListener("submit", async function(e){
@@ -1002,6 +1026,16 @@ h2{font-family:var(--font-display);font-weight:500;font-size:18px;margin:0}
     var prompt = 'You fill in a product form for a skincare and makeup app used in Australia. The user searched for: "' + q.replace(/"/g, "'") + '".\n' +
       'List up to 6 real products that best match, most likely first. Include Korean, Japanese and Western brands. Only include products you are confident exist and never invent one. If the search is just a brand, list its best-known products. If nothing matches, return an empty list.\n' +
       'Reply with JSON only, in exactly this shape: {"results":[{"name":"product name without the brand","brand":"brand name","type":"one of: ' + TYPES.join(", ") + '","origin":"Korean, Japanese, Western or Other"}]}';
+    if (!sampleFn && HELPER_URL) {
+      try {
+        var hr = await fetch(HELPER_URL + "/api/search?q=" + encodeURIComponent(q));
+        var hd = await hr.json();
+        searchResults = (hd.results || []).slice(0, 8).map(function(r){ return {name: r.name, brand: r.brand || "", type: TYPES.indexOf(r.type) >= 0 ? r.type : "Other", image: r.image || null, store: r.store}; });
+        setSearchStatus(searchResults.length ? "Tap the right one to fill in the details and photo." : "No matches found. Try the brand and product name, or fill it in yourself below.");
+        renderSearchResults();
+      } catch(err){ setSearchStatus("Search isn't reachable right now. Check your internet, or fill it in yourself below."); }
+      btn.disabled = false; return;
+    }
     try {
       var data = await sampleFn.json(prompt, {modelTier: "quick"});
       var list = data && Array.isArray(data.results) ? data.results : [];
@@ -1024,8 +1058,14 @@ h2{font-family:var(--font-display);font-weight:500;font-size:18px;margin:0}
     nameInput.value = r.name; brandInput.value = r.brand; typeInput.value = r.type;
     document.getElementById("nameError").hidden = true;
     searchResults = []; renderSearchResults();
-    setSearchStatus("Filled in from search. Check the details below, then add a photo.");
+    setSearchStatus(r.image && HELPER_URL ? "Filled in from search, photo included. Check the details below." : "Filled in from search. Check the details below, then add a photo.");
     buzz(); renderPhoto();
+    if (r.image && HELPER_URL) {
+      fetch(HELPER_URL + "/api/image?url=" + encodeURIComponent(r.image)).then(function(res){
+        if (!res.ok) throw new Error("photo"); return res.blob();
+      }).then(function(b){ usePhotoFile(new File([b], "product." + ((b.type || "").split("/")[1] || "jpg"), {type: b.type || "image/jpeg"})); })
+        .catch(function(){ setSearchStatus("Filled in from search, but the photo couldn't load. You can add your own."); });
+    }
     document.querySelector('label[for="photoInput"]').scrollIntoView({behavior: "smooth", block: "center"});
   });
   (async function(){
@@ -1099,7 +1139,7 @@ h2{font-family:var(--font-display);font-weight:500;font-size:18px;margin:0}
     });
     var data = {name: name, brand: brandInput.value.trim(), type: typeInput.value, lists: lists,
       photo: prev ? (prev.photo || null) : null, backups: ss.id ? backupsOf(ss.id) : 0, openedOn: prev ? (prev.openedOn || null) : null,
-      useByMonths: prev ? (prev.useByMonths || null) : null,
+      useByMonths: prev ? (prev.useByMonths || null) : null, prices: prev && prev.prices ? prev.prices : null,
       createdAt: prev ? (prev.createdAt || Date.now()) : Date.now()};
     var oldPhoto = prev && prev.photo;
     try {
@@ -1211,7 +1251,7 @@ h2{font-family:var(--font-display);font-weight:500;font-size:18px;margin:0}
     }
     shelfWrap.innerHTML = html;
   }
-  function renderAll(){ renderRoutine(); renderStash(); renderHome(); }
+  function renderAll(){ renderRoutine(); renderStash(); renderHome(); renderShop(); }
 
   function burst(id){
     var art = shelfWrap.querySelector('[data-art="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]'); if (!art) return;
@@ -1338,7 +1378,9 @@ h2{font-family:var(--font-display);font-weight:500;font-size:18px;margin:0}
       ? '<p class="muted">' + (ids.length ? "Nothing's running low. Your shelf is stocked!" : "Products you're on the last of will show here.") + '</p>'
       : low.slice(0, 5).map(function(id){
           var p = state.products[id];
-          return '<div class="mini-row">' + thumbHtml(p) + nameBlock(p, '<span class="item-days">Last one</span>') + '<a class="mini-btn" href="#shop">Find a deal</a></div>';
+          var best = okPrices(p)[0];
+          var line = best ? 'Last one · from ' + money(best.price) + ' at ' + esc(best.store) : 'Last one';
+          return '<div class="mini-row">' + thumbHtml(p) + nameBlock(p, '<span class="item-days">' + line + '</span>') + '<a class="mini-btn" href="#shop">' + (best ? 'See deals' : 'Find a deal') + '</a></div>';
         }).join("") + (low.length > 5 ? '<a class="more" href="#stash">+' + (low.length - 5) + ' more in Stash</a>' : '');
 
     var opened = ids.filter(function(id){ return state.products[id].openedOn; });
@@ -1359,6 +1401,79 @@ h2{font-family:var(--font-display);font-weight:500;font-size:18px;margin:0}
   document.getElementById("expList").addEventListener("click", function(e){
     var b = e.target.closest("[data-stash]"); if (b) openStash(b.dataset.stash);
   });
+
+  /* ---------- Shop ---------- */
+  function money(n){ return "$" + Number(n).toFixed(2); }
+  function okPrices(p){ return p.prices && Array.isArray(p.prices.results) ? p.prices.results.filter(function(r){ return r.status === "ok" && r.price; }).sort(function(a,b){ return a.price - b.price; }) : []; }
+  function lastCheckedText(){
+    var t = 0; Object.keys(state.products).forEach(function(id){ var pr = state.products[id].prices; if (pr && pr.checkedAt) t = Math.max(t, Date.parse(pr.checkedAt) || 0); });
+    if (!t) return "Not checked yet";
+    var d = new Date(t);
+    return d.toLocaleDateString("en-AU", {weekday:"short", day:"numeric", month:"short"}) + ", " + d.toLocaleTimeString("en-AU", {hour:"numeric", minute:"2-digit"}).replace(" ", "").toLowerCase();
+  }
+  function dealCard(id){
+    var p = state.products[id], ok = okPrices(p), low = backupsOf(id) === 0;
+    var head = '<div class="deal-head">' + thumbHtml(p) + nameBlock(p, (p.brand ? '<span class="item-brand">' + esc(p.brand) + '</span>' : '') + (low ? '<span class="item-days">Last one</span>' : '')) + '</div>';
+    var body;
+    if (!p.prices) body = '<p class="notfound">Tap refresh to check prices.</p>';
+    else if (!ok.length) body = '<p class="notfound">Couldn\'t find this one in stores yet. Check the name and brand match the store listing.</p>';
+    else {
+      body = '<div class="deal-rows">' + ok.map(function(r, i){
+        var save = r.wasPrice && r.wasPrice > r.price ? r.wasPrice - r.price : 0;
+        return '<a class="deal-row' + (i === 0 ? ' best' : '') + '" href="' + esc(r.url || "#") + '" target="_blank" rel="noopener">' +
+          '<span class="deal-store"><b>' + esc(r.store) + '</b>' +
+          ((i === 0 || save >= 1) ? '<span class="deal-badges">' + (i === 0 ? '<span class="best-label">Cheapest</span>' : '') + (save >= 1 ? '<span class="save">Save ' + money(save) + '</span>' : '') + '</span>' : '') +
+          '<small>' + esc(r.match || "") + '</small></span>' +
+          (r.wasPrice ? '<span class="was">' + money(r.wasPrice) + '</span>' : '') +
+          '<span class="tag">' + money(r.price) + '</span></a>';
+      }).join("") + '</div>';
+      var missing = p.prices.results.filter(function(r){ return r.status !== "ok"; }).map(function(r){ return r.store; });
+      if (missing.length) body += '<p class="notfound">Not found at: ' + esc(missing.join(", ")) + '</p>';
+    }
+    return '<div class="card">' + head + body + '</div>';
+  }
+  function renderShop(){
+    document.getElementById("lastChecked").textContent = lastCheckedText();
+    var ids = Object.keys(state.products).sort(function(a,b){ return stashRank(a) - stashRank(b); });
+    var low = ids.filter(function(id){ return backupsOf(id) === 0; }), rest = ids.filter(function(id){ return backupsOf(id) > 0; });
+    var anyChecked = ids.some(function(id){ return state.products[id].prices; });
+    document.getElementById("shopEmpty").hidden = ids.length > 0 && anyChecked;
+    document.getElementById("shopEmptyTitle").textContent = ids.length ? "No prices to show yet" : "Nothing to shop for yet";
+    document.getElementById("shopEmptyText").textContent = ids.length ? "Tap refresh to check Priceline, Chemist Warehouse, Adore Beauty, Lila Beauty, Woolworths and more, side by side." : "Add products to your routine and their prices will show up here.";
+    document.getElementById("shopLowWrap").hidden = !anyChecked || !low.length;
+    document.getElementById("shopRestWrap").hidden = !anyChecked || !rest.length;
+    document.getElementById("shopRestTitle").textContent = low.length ? "Everything else" : "Your products";
+    if (anyChecked) {
+      document.getElementById("shopLow").innerHTML = low.map(dealCard).join("");
+      document.getElementById("shopRest").innerHTML = rest.map(dealCard).join("");
+    }
+  }
+  async function refreshPrices(){
+    if (checking) return;
+    var ids = Object.keys(state.products).sort(function(a,b){ return (backupsOf(a) === 0 ? 0 : 1) - (backupsOf(b) === 0 ? 0 : 1) || stashRank(a) - stashRank(b); });
+    if (!ids.length) { toast("Add some products first."); return; }
+    checking = true; refreshBtn.disabled = true;
+    var prog = document.getElementById("shopProgress"), done = 0, failed = 0, next = 0;
+    prog.hidden = false; prog.textContent = "Checking prices… 0 of " + ids.length;
+    async function worker(){
+      while (next < ids.length) {
+        var id = ids[next++], p = state.products[id];
+        if (!p) { done++; continue; }
+        try {
+          var r = await fetch(HELPER_URL + "/api/prices?q=" + encodeURIComponent(((p.brand || "") + " " + p.name).trim()));
+          if (!r.ok) throw new Error("prices");
+          var d = await r.json();
+          await state.col.doc(id).update({prices: {checkedAt: d.checkedAt || new Date().toISOString(), results: d.results || []}});
+        } catch(e){ failed++; }
+        done++; prog.textContent = "Checking prices… " + done + " of " + ids.length;
+      }
+    }
+    await Promise.all([worker(), worker(), worker()]);
+    checking = false; refreshBtn.disabled = false; prog.hidden = true;
+    renderAll();
+    if (failed === ids.length) toast("Couldn't reach the price checker. Check your internet and try again.");
+    else showPip("happy", failed ? "Prices updated! A few couldn't be checked this time." : "Prices updated! Here are your deals.");
+  }
 
   /* ---------- Saving ---------- */
   document.querySelector(".step-pill").hidden = !IS_CLAUDE;
