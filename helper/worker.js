@@ -5,8 +5,8 @@ const ALLOWED_ORIGINS = ["https://jessmakes-dev.github.io"];
 const UA = "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
 
 const STORES = [
-  { id: "priceline", name: "Priceline", base: "https://www.priceline.com.au", pages: ["/search?q={q}", "/search?searchTerm={q}"] },
-  { id: "chemist", name: "Chemist Warehouse", base: "https://www.chemistwarehouse.com.au", pages: ["/search?query={q}", "/search?searchtext={q}"] },
+  { id: "priceline", name: "Priceline", base: "https://www.priceline.com.au", occ: true, pages: [] },
+  { id: "chemist", name: "Chemist Warehouse", base: "https://www.chemistwarehouse.com.au", chemist: true, pages: ["/search?query={q}"] },
   { id: "adore", name: "Adore Beauty", base: "https://www.adorebeauty.com.au", pages: ["/results?q={q}", "/search?q={q}"] },
   { id: "lila", name: "Lila Beauty", base: "https://www.lilabeauty.com.au", shopify: true, pages: ["/search?q={q}&type=product"] },
   { id: "nudieglow", name: "Nudie Glow", base: "https://nudieglow.com", shopify: true, pages: [] },
@@ -46,6 +46,10 @@ export default {
         return json({ q, results }, cors);
       }
       if (url.pathname === "/api/image") return image(url.searchParams.get("url"), cors);
+      if (url.pathname === "/api/peek3") {
+        if (!q) return new Response("Add ?q=product to the address", { headers: { "content-type": "text/plain" } });
+        return new Response(await peekNextScripts(STORES.find(s => s.id === "chemist"), q), { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+      }
       if (url.pathname === "/api/peek2") {
         if (!q) return new Response("Add ?q=product to the address", { headers: { "content-type": "text/plain" } });
         const parts = await Promise.all([peekContext(STORES.find(s => s.id === "chemist"), q), peekScripts(STORES.find(s => s.id === "priceline"), q)]);
@@ -92,6 +96,35 @@ async function checkStore(store, q, verbose) {
       tried.push({ how: "shopify", status: r.status, bytes: r.text.length });
       if (r.status === 200) {
         const items = shopifyItems(store, r.text);
+        if (items.length) return done(store, "ok", items, tried, verbose);
+      }
+    }
+    if (store.occ) {
+      const cfg = await occConfig(store, tried);
+      for (const c of cfg) {
+        const u = c.base + c.prefix + c.site + "/products/search?query=" + enc + "&pageSize=12&fields=FULL&lang=en&curr=AUD";
+        const r = await get(u, "application/json");
+        tried.push({ how: "shop service " + c.prefix + c.site, status: r.status, bytes: r.text.length });
+        if (r.status === 200) {
+          let d = null; try { d = JSON.parse(r.text); } catch {}
+          const items = [];
+          if (d) walkData(d.products || d, items, { ...store, base: store.base }, 0);
+          items.forEach(it => { if (it.image && it.image.startsWith(store.base + "/medias")) it.image = c.base + it.image.slice(store.base.length); });
+          if (items.length) return done(store, "ok", dedupe(items), tried, verbose);
+        }
+      }
+    }
+    if (store.chemist) {
+      const tries = [
+        "/searchapi/webapi/search/terms?category=catalog01_chemau&index=0&sort=&term=" + enc,
+        "/api/search?query=" + enc,
+        "/api/products/search?query=" + enc,
+      ];
+      for (const t of tries) {
+        const r = await get(store.base + t, "application/json");
+        let items = [];
+        if (r.status === 200) { try { const d = JSON.parse(r.text); items = fredhopperItems(store, d); if (!items.length) { walkData(d, items, store, 0); items = dedupe(items); } } catch {} }
+        tried.push({ how: "data " + t.split("?")[0], status: r.status, bytes: r.text.length, found: items.length });
         if (items.length) return done(store, "ok", items, tried, verbose);
       }
     }
@@ -190,6 +223,30 @@ async function peekContext(store, q) {
   } catch (e) { lines.push("error " + (e && e.message || e)); }
   return lines.join("\n");
 }
+async function peekNextScripts(store, q) {
+  const lines = ["== " + store.name + " (scripts) =="];
+  try {
+    const r = await get(store.base + "/search?query=" + encodeURIComponent(q));
+    const srcs = [...new Set([...r.text.matchAll(/["'](\/_next\/static\/[^"']+\.js)["']/g)].map(m => m[1]))];
+    lines.push(srcs.length + " scripts");
+    const wanted = srcs.filter(s2 => /pages\/(search|_app)|app\/|search/i.test(s2)).concat(srcs).filter((v, i, a) => a.indexOf(v) === i).slice(0, 30);
+    const seen = new Set(); let total = 0;
+    for (const src of wanted) {
+      const js = (await get(store.base + src, "*/*")).text;
+      let n = 0;
+      for (const m of js.matchAll(/["'`]((?:https?:\/\/[a-z0-9.\-]+)?\/[A-Za-z0-9_\-\/.]*(?:api|search|graphql|algolia|constructor|fredhopper|query)[A-Za-z0-9_\-\/.?=&{}$]*)["'`]|algolia|constructor\.io|cnstrc|x-algolia|apiKey|indexName/gi)) {
+        const snip = js.slice(Math.max(0, m.index - 90), m.index + 140).replace(/\s+/g, " ");
+        const key = (m[1] || m[0]) + snip.slice(80, 120); if (seen.has(key)) continue; seen.add(key);
+        if (n === 0) lines.push("--- " + src.split("/").slice(-2).join("/"));
+        lines.push("  ..." + snip + "...");
+        n++; total++;
+        if (n >= 6 || total >= 45) break;
+      }
+      if (total >= 45) break;
+    }
+  } catch (e) { lines.push("error " + (e && e.message || e)); }
+  return lines.join("\n");
+}
 async function peekScripts(store, q) {
   const lines = ["== " + store.name + " (scripts) =="];
   try {
@@ -211,6 +268,38 @@ async function peekScripts(store, q) {
   return lines.join("\n");
 }
 
+const occCache = {};
+async function occConfig(store, tried) {
+  if (occCache[store.id]) return occCache[store.id];
+  const list = [];
+  try {
+    const page = await get(store.base + "/");
+    const src = (page.text.match(/<script[^>]+src=["']([^"']*main[^"']*\.js)["']/i) || [])[1];
+    if (src) {
+      const js = (await get(absolute(store.base + "/", src), "*/*")).text;
+      const base = (js.match(/baseUrl\s*:\s*["'](https:\/\/api\.[^"']+?)["']/) || [])[1];
+      const prefix = (js.match(/prefix\s*:\s*["'](\/[^"']*?\/v2\/)["']/) || [])[1];
+      const site = (js.match(/baseSite\s*:\s*\[\s*["']([^"']+)["']/) || js.match(/baseSite\s*:\s*["']([^"']+)["']/) || [])[1];
+      tried.push({ how: "settings found: " + [base, prefix, site].map(x => x || "?").join(" ") });
+      if (site) list.push({ base: (base || "https://api.priceline.com.au").replace(/\/$/, ""), prefix: prefix || "/occ/v2/", site });
+    }
+  } catch (e) { tried.push({ how: "settings error", message: String(e && e.message || e) }); }
+  for (const site of ["priceline", "pricelinepharmacy", "pl"]) for (const prefix of ["/occ/v2/", "/rest/v2/"]) list.push({ base: "https://api.priceline.com.au", prefix, site });
+  const out = list.slice(0, 5);
+  if (list.length && tried.some(t => (t.how || "").startsWith("settings found")) ) occCache[store.id] = out;
+  return out;
+}
+function fredhopperItems(store, d) {
+  const out = [];
+  const uni = d && d.universes && d.universes.universe;
+  const items = uni && [].concat(uni)[0] && ([].concat(uni)[0]["items-section"] || {}).items;
+  for (const it of (items && [].concat(items.item || [])) || []) {
+    const a = {}; for (const at of [].concat(it.attribute || [])) { const v = [].concat(at.value || [])[0]; a[at.name] = v && (v.value ?? v); }
+    const x = clean(store, { name: a.name, brand: a.brand || a.manufacturer, price: num(a.price), wasPrice: num(a.rrp || a.rrp_price), url: a.producturl || a.product_url || a.url, image: a._thumburl || a.image || a.imageurl, inStock: true });
+    if (x) out.push(x);
+  }
+  return out;
+}
 function shopifyItems(store, text) {
   let d; try { d = JSON.parse(text); } catch { return []; }
   const list = (((d || {}).resources || {}).results || {}).products || [];
@@ -422,6 +511,6 @@ if(it.image){const img=document.createElement("img");img.src="/api/image?url="+e
 const box=document.createElement("div");const t=document.createElement("div");t.textContent=(it.brand?it.brand+" · ":"")+it.name;
 const sm=document.createElement("small");sm.textContent="$"+Number(it.price).toFixed(2)+(it.wasPrice?" (was $"+Number(it.wasPrice).toFixed(2)+")":"");
 box.appendChild(t);box.appendChild(sm);row.appendChild(box);div.appendChild(row)});
-const pre=document.createElement("pre");pre.textContent=s.tried.map(t=>t.how+": "+(t.status||"")+(t.blocked?" blocked":"")+(t.message?" "+t.message:"")).join("\\n");div.appendChild(pre);out.appendChild(div)}}
+const pre=document.createElement("pre");pre.textContent=s.tried.map(t=>t.how+(t.status!=null?": "+t.status:"")+(t.found!=null?" found "+t.found:"")+(t.blocked?" blocked":"")+(t.message?" "+t.message:"")).join("\\n");div.appendChild(pre);out.appendChild(div)}}
 catch(err){out.textContent="The test didn't finish: "+err.message}};
 </script></body></html>`;
