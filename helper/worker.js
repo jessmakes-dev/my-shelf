@@ -307,7 +307,11 @@ try{const r=await fetch("/api/test?q="+encodeURIComponent(q));const d=await r.js
 for(const s of d.results){const div=document.createElement("div");div.className="store";
 const label={ok:"Working",blocked:"Blocked by the store",none:"Opened, but no products read",error:"Error"}[s.status];
 div.innerHTML="<b>"+s.store+"</b> <span class='"+s.status+"'>"+label+" ("+s.items.length+" found)</span>";
-s.items.slice(0,3).forEach(it=>{const row=document.createElement("div");row.className="item";row.innerHTML=(it.image?"<img src='/api/image?url="+encodeURIComponent(it.image)+"'>":"")+"<div><div></div><small></small></div>";row.querySelector("div div").textContent=(it.brand?it.brand+" · ":"")+it.name;row.querySelector("small").textContent="$"+it.price.toFixed(2)+(it.wasPrice?" (was $"+it.wasPrice.toFixed(2)+")":"");div.appendChild(row)});
+s.items.slice(0,3).forEach(it=>{const row=document.createElement("div");row.className="item";
+if(it.image){const img=document.createElement("img");img.src="/api/image?url="+encodeURIComponent(it.image);img.alt="";row.appendChild(img)}
+const box=document.createElement("div");const t=document.createElement("div");t.textContent=(it.brand?it.brand+" · ":"")+it.name;
+const sm=document.createElement("small");sm.textContent="$"+Number(it.price).toFixed(2)+(it.wasPrice?" (was $"+Number(it.wasPrice).toFixed(2)+")":"");
+box.appendChild(t);box.appendChild(sm);row.appendChild(box);div.appendChild(row)});
 const pre=document.createElement("pre");pre.textContent=s.tried.map(t=>t.how+": "+(t.status||"")+(t.blocked?" blocked":"")+(t.message?" "+t.message:"")).join("\\n");div.appendChild(pre);out.appendChild(div)}}
 catch(err){out.textContent="The test didn't finish: "+err.message}};
 </script></body></html>`;
