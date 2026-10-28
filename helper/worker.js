@@ -9,13 +9,14 @@ const STORES = [
   { id: "chemist", name: "Chemist Warehouse", base: "https://www.chemistwarehouse.com.au", pages: ["/search?query={q}", "/search?searchtext={q}"] },
   { id: "adore", name: "Adore Beauty", base: "https://www.adorebeauty.com.au", pages: ["/results?q={q}", "/search?q={q}"] },
   { id: "lila", name: "Lila Beauty", base: "https://www.lilabeauty.com.au", shopify: true, pages: ["/search?q={q}&type=product"] },
+  { id: "nudieglow", name: "Nudie Glow", base: "https://nudieglow.com", shopify: true, pages: [] },
   { id: "woolworths", name: "Woolworths", base: "https://www.woolworths.com.au", woolworths: true, pages: ["/shop/search/products?searchTerm={q}"] },
   { id: "coles", name: "Coles", base: "https://www.coles.com.au", pages: ["/search/products?q={q}"] },
   { id: "mecca", name: "Mecca", base: "https://www.mecca.com", pages: ["/en-au/search/?q={q}"] },
   { id: "sephora", name: "Sephora", base: "https://www.sephora.com.au", pages: ["/search?q={q}"] },
   { id: "amazon", name: "Amazon AU", base: "https://www.amazon.com.au", amazon: true, pages: ["/s?k={q}"] },
 ];
-const SEARCH_STORES = ["lila", "woolworths", "adore", "priceline", "chemist", "amazon"];
+const SEARCH_STORES = ["lila", "nudieglow", "woolworths", "adore", "priceline", "chemist", "amazon"];
 
 export default {
   async fetch(request) {
@@ -288,11 +289,22 @@ const TYPE_WORDS = [
 ];
 function guessType(name) { const n = name.toLowerCase(); for (const [t, re] of TYPE_WORDS) if (re.test(n)) return t; return "Other"; }
 
+async function obfSearch(q) {
+  try {
+    const r = await get("https://world.openbeautyfacts.org/cgi/search.pl?search_terms=" + encodeURIComponent(q) + "&search_simple=1&action=process&json=1&page_size=20&fields=product_name,brands,image_front_url,image_url", "application/json");
+    if (r.status !== 200) return [];
+    const d = JSON.parse(r.text);
+    return (d.products || []).map(p => ({ store: "Open Beauty Facts", name: str(p.product_name).trim(), brand: str(p.brands).split(",")[0].trim(), image: p.image_front_url || p.image_url || null }))
+      .filter(x => x.name && x.image);
+  } catch { return []; }
+}
+
 async function search(q) {
   const stores = STORES.filter(s => SEARCH_STORES.includes(s.id));
-  const results = await Promise.all(stores.map(s => checkStore(s, q, false)));
+  const [results, obf] = await Promise.all([Promise.all(stores.map(s => checkStore(s, q, false))), obfSearch(q)]);
   const all = [];
   for (const r of results) for (const it of r.items) all.push({ ...it, score: score(q, it) });
+  for (const it of obf) all.push({ ...it, score: score(q, it) - 0.01 });
   all.sort((a, b) => b.score - a.score || (b.image ? 1 : 0) - (a.image ? 1 : 0));
   const seen = new Set(), out = [];
   for (const it of all) {
@@ -303,9 +315,9 @@ async function search(q) {
     const key = (brand + " " + name).toLowerCase().replace(/[^a-z0-9]/g, "");
     if (seen.has(key)) continue; seen.add(key);
     out.push({ name, brand, type: guessType(it.name), image: it.image, store: it.store });
-    if (out.length >= 8) break;
+    if (out.length >= 10) break;
   }
-  return { q, results: out, stores: results.map(r => ({ store: r.store, status: r.status, found: r.items.length })) };
+  return { q, results: out, stores: results.map(r => ({ store: r.store, status: r.status, found: r.items.length })).concat([{ store: "Open Beauty Facts", status: obf.length ? "ok" : "none", found: obf.length }]) };
 }
 
 /* ---------- Prices ---------- */
