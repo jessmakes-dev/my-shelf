@@ -115,6 +115,10 @@ async function checkStore(store, q, verbose) {
       }
     }
     if (store.chemist) {
+      const algo = await algoliaSearch(store, q, tried);
+      if (algo.length) return done(store, "ok", algo, tried, verbose);
+    }
+    if (store.chemist && false) {
       const tries = [
         "/searchapi/webapi/search/terms?category=catalog01_chemau&index=0&sort=&term=" + enc,
         "/api/search?query=" + enc,
@@ -268,6 +272,45 @@ async function peekScripts(store, q) {
   return lines.join("\n");
 }
 
+const algoliaCache = {};
+async function algoliaConfig(store, tried) {
+  if (algoliaCache[store.id]) return algoliaCache[store.id];
+  const page = await get(store.base + "/search?query=lip");
+  const texts = [page.text];
+  const srcs = [...new Set([...page.text.matchAll(/["'](\/_next\/static\/[^"']+\.js)["']/g)].map(m => m[1]))].slice(0, 24);
+  const scripts = await Promise.all(srcs.map(src => get(store.base + src, "*/*").then(r => r.text).catch(() => "")));
+  texts.push(...scripts);
+  const all = texts.join("\n");
+  const find = re => (all.match(re) || [])[1];
+  const appId = find(/NEXT_PUBLIC_ALGOLIA_APP_ID["']?\s*[:=]\s*["']([A-Z0-9]{8,12})["']/);
+  const key = find(/NEXT_PUBLIC_ALGOLIA_SEARCH_API_KEY["']?\s*[:=]\s*["']([A-Za-z0-9]{20,64})["']/);
+  const indexes = [...new Set([...all.matchAll(/NEXT_PUBLIC_ALGOLIA_[A-Z_]*INDEX[A-Z_]*["']?\s*[:=]\s*["']([^"']{3,80})["']/g)].map(m => m[1]))];
+  indexes.sort((a, b) => (/product/i.test(b) ? 1 : 0) - (/product/i.test(a) ? 1 : 0) || (/suggest|query|categor|article|content/i.test(a) ? 1 : 0) - (/suggest|query|categor|article|content/i.test(b) ? 1 : 0));
+  tried.push({ how: "search settings: app " + (appId || "?") + ", key " + (key ? "found" : "?") + ", lists " + (indexes.join(" | ") || "?") + " (" + srcs.length + " scripts)" });
+  const cfg = appId && key ? { appId, key, indexes: indexes.slice(0, 4) } : null;
+  if (cfg && cfg.indexes.length) algoliaCache[store.id] = cfg;
+  return cfg;
+}
+async function algoliaSearch(store, q, tried) {
+  let cfg;
+  try { cfg = await algoliaConfig(store, tried); } catch (e) { tried.push({ how: "search settings error", message: String(e && e.message || e) }); return []; }
+  if (!cfg) return [];
+  for (const index of cfg.indexes) {
+    try {
+      const r = await fetch("https://" + cfg.appId + "-dsn.algolia.net/1/indexes/" + encodeURIComponent(index) + "/query", {
+        method: "POST",
+        headers: { "X-Algolia-Application-Id": cfg.appId, "X-Algolia-API-Key": cfg.key, "Content-Type": "application/json", "Referer": store.base + "/", "Origin": store.base },
+        body: JSON.stringify({ params: "query=" + encodeURIComponent(q) + "&hitsPerPage=12" }),
+      });
+      const text = await r.text();
+      let items = [];
+      if (r.status === 200) { try { const d = JSON.parse(text); walkData(d.hits || [], items, store, 0); items = dedupe(items); } catch {} }
+      tried.push({ how: "search service list " + index, status: r.status, found: items.length, message: r.status === 200 && !items.length ? text.slice(0, 300) : undefined });
+      if (items.length) return items;
+    } catch (e) { tried.push({ how: "search service error", message: String(e && e.message || e) }); }
+  }
+  return [];
+}
 const occCache = {};
 async function occConfig(store, tried) {
   if (occCache[store.id]) return occCache[store.id];
